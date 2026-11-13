@@ -1,21 +1,20 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useContext } from 'react';
 import {
   Play,
-  Square,
-  Plus,
+  Stop,
   Globe,
   Activity,
-  Zap,
+  Bolt,
   Shield,
-  Network,
-  AlertCircle,
-  Loader2,
-  CheckCircle2,
-  XCircle,
-  ArrowRight,
+  AlertCircle as ErrorIcon,
+  CheckCircle,
+  Cancel,
+  ArrowForward,
   FileText,
-  CheckSquare
-} from 'lucide-react';
+  CheckSquare,
+  History,
+  Wifi
+} from '../lib/icons';
 import {
   StartEvolutionTest,
   StopEvolutionTest,
@@ -26,6 +25,14 @@ import {
 import Modal from '../components/Modal';
 import { toast } from '../lib/toast';
 import { useTranslation } from '../i18n/I18nContext';
+import { SettingsCtx } from '../App';
+import { Box, Typography, Button, TextField, Switch, LinearProgress, CircularProgress } from '@mui/material';
+import { alpha, keyframes } from '@mui/material/styles';
+
+const shimmer = keyframes`
+  0% { background-position: 0% 0%; }
+  100% { background-position: 200% 0%; }
+`;
 
 interface TestResult {
   domain: string;
@@ -65,50 +72,30 @@ type TabType = 'test' | 'rules' | 'results';
 
 const getMethodIcon = (method?: string) => {
   switch (method) {
-    case 'direct': return <Globe className="w-4 h-4" />;
-    case 'domain_fronting': return <Shield className="w-4 h-4" />;
-    case 'tls_fragment': return <Network className="w-4 h-4" />;
-    case 'ech': return <Zap className="w-4 h-4" />;
-    case 'quic': return <Activity className="w-4 h-4" />;
-    default: return <AlertCircle className="w-4 h-4" />;
+    case 'direct': return <Globe size={16} />;
+    case 'domain_fronting': return <Shield size={16} />;
+    case 'tls_fragment': return <Globe size={16} />;
+    case 'ech': return <Bolt size={16} />;
+    case 'quic': return <Activity size={16} />;
+    default: return <ErrorIcon size={16} />;
   }
 };
 
-const getMethodColor = (method?: string) => {
+const getMethodColors = (method?: string) => {
   switch (method) {
-    case 'direct': return 'text-success';
-    case 'domain_fronting': return 'text-amber-600 dark:text-amber-400';
-    case 'tls_fragment': return 'text-blue-600 dark:text-blue-400';
-    case 'ech': return 'text-purple-600 dark:text-purple-400';
-    case 'quic': return 'text-cyan-600 dark:text-cyan-400';
-    default: return 'text-danger';
-  }
-};
-
-const getMethodBgColor = (method?: string) => {
-  switch (method) {
-    case 'direct': return 'bg-success/10 border-success/20';
-    case 'domain_fronting': return 'bg-amber-500/10 border-amber-500/20';
-    case 'tls_fragment': return 'bg-blue-500/10 border-blue-500/20';
-    case 'ech': return 'bg-purple-500/10 border-purple-500/20';
-    case 'quic': return 'bg-cyan-500/10 border-cyan-500/20';
-    default: return 'bg-danger/10 border-danger/20';
-  }
-};
-
-const getMethodLabel = (method?: string) => {
-  switch (method) {
-    case 'direct': return '直连';
-    case 'domain_fronting': return '域前置';
-    case 'tls_fragment': return 'TLS分片';
-    case 'ech': return 'ECH';
-    case 'quic': return 'QUIC';
-    default: return '不可达';
+    case 'direct': return { color: 'success.main', bg: 'rgba(34,197,94,0.1)', border: 'rgba(34,197,94,0.2)' };
+    case 'domain_fronting': return { color: 'warning.main', bg: 'rgba(234,88,12,0.1)', border: 'rgba(234,88,12,0.2)' };
+    case 'tls_fragment': return { color: 'primary.main', bg: (theme: any) => alpha(theme.palette.primary.main, 0.1), border: (theme: any) => alpha(theme.palette.primary.main, 0.2) };
+    case 'ech': return { color: 'secondary.main', bg: (theme: any) => alpha(theme.palette.secondary.main, 0.1), border: (theme: any) => alpha(theme.palette.secondary.main, 0.2) };
+    case 'quic': return { color: '#06b6d4', bg: 'rgba(6,182,212,0.1)', border: 'rgba(6,182,212,0.2)' };
+    default: return { color: 'error.main', bg: 'rgba(239,68,68,0.1)', border: 'rgba(239,68,68,0.2)' };
   }
 };
 
 const Evolution: React.FC = () => {
   const { t } = useTranslation();
+  const { cache } = useContext(SettingsCtx);
+  const ipv6Available = cache.ipv6Available !== false;
   const [activeTab, setActiveTab] = useState<TabType>('test');
   const [domains, setDomains] = useState<string>('');
   const [enableIPv6, setEnableIPv6] = useState(false);
@@ -119,8 +106,6 @@ const Evolution: React.FC = () => {
   const [isOperating, setIsOperating] = useState(false);
   const [showRuleModal, setShowRuleModal] = useState(false);
   const [selectedRule, setSelectedRule] = useState<TempRule | null>(null);
-  const [currentTestingDomain, setCurrentTestingDomain] = useState<string>('');
-  const [testLogs, setTestLogs] = useState<string[]>([]);
   const logsEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -129,26 +114,37 @@ const Evolution: React.FC = () => {
 
   useEffect(() => {
     scrollToBottom();
-  }, [testLogs]);
+  }, [tempRules]);
+
+  const getMethodLabel = (method?: string): string => {
+    const key = method || 'unreachable';
+    const label = t(`evolution.methods.${key}`);
+    return label === `evolution.methods.${key}` ? key : label;
+  };
+
+  const getStepLabel = (stepName: string): string => {
+    const key = stepName.replace(/-/g, '_');
+    const label = t(`evolution.steps.${key}`);
+    return label === `evolution.steps.${key}` ? stepName.replace(/_/g, ' ') : label;
+  };
 
   const handleStartTest = async () => {
     const domainList = domains.split('\n').map(d => d.trim()).filter(d => d.length > 0);
 
     if (domainList.length === 0) {
-      toast.error('请输入至少一个域名');
+      toast.error(t('evolution.empty_rules'));
       return;
     }
 
     setIsOperating(true);
     setIsRunning(true);
-    setTestLogs([]);
     setProgress({ current: 0, total: domainList.length });
 
     try {
       await StartEvolutionTest(domainList, enableIPv6);
-      toast.success(`开始测试 ${domainList.length} 个域名`);
+      toast.success(t('evolution.start_success', { count: domainList.length }));
     } catch (error: any) {
-      toast.error(`启动测试失败: ${error?.message || error}`);
+      toast.error(t('evolution.start_failed', { error: error?.message || error }));
       setIsRunning(false);
       setIsOperating(false);
     }
@@ -159,9 +155,9 @@ const Evolution: React.FC = () => {
       await StopEvolutionTest();
       setIsRunning(false);
       setIsOperating(false);
-      toast.info('测试已停止');
+      toast.info(t('evolution.stop_success'));
     } catch (error: any) {
-      toast.error(`停止测试失败: ${error?.message || error}`);
+      toast.error(t('evolution.stop_failed', { error: error?.message || error }));
     }
   };
 
@@ -175,11 +171,11 @@ const Evolution: React.FC = () => {
     try {
       await ApplyEvolutionRule(selectedRule.id);
       setTempRules(prev => prev.filter(r => r.id !== selectedRule.id));
-      toast.success(`规则 "${selectedRule.name}" 已转为正式规则`);
+      toast.success(t('evolution.convert_success', { name: selectedRule.name }));
       setShowRuleModal(false);
       setSelectedRule(null);
     } catch (error: any) {
-      toast.error(`应用规则失败: ${error?.message || error}`);
+      toast.error(t('evolution.convert_failed', { error: error?.message || error }));
     }
   };
 
@@ -206,7 +202,7 @@ const Evolution: React.FC = () => {
           }
         }
       } catch (e) {
-        console.error("获取进化模式状态失败:", e);
+        console.error(t('evolution.status_failed'), e);
       }
     };
 
@@ -235,7 +231,11 @@ const Evolution: React.FC = () => {
           .map((r: TestResult) => r.generated_rule!);
         setTempRules(newRules);
       }
-      toast.success(`测试完成，共 ${data.results?.length || 0} 个域名`);
+      // 手动停止（后端将任务状态置为 failed）时只同步结果，不跳转、不弹完成提示
+      if (data.status === 'failed') {
+        return;
+      }
+      toast.success(t('evolution.complete_success', { count: data.results?.length || 0 }));
       setActiveTab('results');
     };
 
@@ -248,370 +248,426 @@ const Evolution: React.FC = () => {
     };
   }, []);
 
+  const successCount = results.filter(r => r.reachable).length;
+  const failCount = results.filter(r => !r.reachable).length;
+  const progressPercent = progress.total > 0 ? (progress.current / progress.total) * 100 : 0;
+  const domainCount = domains.split('\n').filter(d => d.trim().length > 0).length;
+
   const tabs = [
-    { id: 'test' as TabType, label: '测试', icon: <Play className="w-4 h-4" />, count: undefined },
-    { id: 'rules' as TabType, label: '规则', icon: <FileText className="w-4 h-4" />, count: tempRules.length },
-    { id: 'results' as TabType, label: '结果', icon: <Activity className="w-4 h-4" />, count: results.length },
+    { id: 'test' as TabType, label: t('evolution.tab_test'), icon: <Play size={16} />, count: undefined },
+    { id: 'rules' as TabType, label: t('evolution.tab_rules'), icon: <FileText size={16} />, count: tempRules.length },
+    { id: 'results' as TabType, label: t('evolution.tab_results'), icon: <Activity size={16} />, count: results.length },
   ];
 
-  return (
-    <div className="h-full flex flex-col bg-background-soft/30">
-      {/* Header */}
-      <div className="px-6 py-4 border-b border-border/60 bg-background/70 backdrop-blur-md">
-        <div className="flex items-center gap-3">
-          <div className="p-2 bg-accent/10 rounded-xl">
-            <Zap className="w-5 h-5 text-accent" />
-          </div>
-          <div>
-            <h1 className="text-lg font-bold text-text-primary">进化模式</h1>
-            <p className="text-xs text-text-muted">自动测试域名连通性并生成最优规则</p>
-          </div>
-        </div>
-      </div>
+  const flowSteps = [t('evolution.steps.direct'), t('evolution.steps.tcping'), t('evolution.steps.domain_fronting'), t('evolution.steps.tls_fragment'), t('evolution.steps.ech'), t('evolution.steps.quic')];
 
-      {/* Tab Bar */}
-      <div className="px-6 py-2 border-b border-border/60 bg-background/50">
-        <div className="flex gap-1">
-          {tabs.map((tab) => (
-            <button
+  return (
+    <Box sx={{ flexGrow: 1, minHeight: 0, width: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <Box sx={{ pt: 4, flexShrink: 0, display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: { xs: 'flex-start', sm: 'flex-end' }, gap: 2, mb: 6 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+          <Box sx={{ p: 1.25, borderRadius: 1.5, border: 1, color: 'primary.main', bgcolor: (theme) => alpha(theme.palette.primary.main, 0.1), borderColor: (theme) => alpha(theme.palette.primary.main, 0.1), display: 'flex' }}>
+            <Bolt size={20} />
+          </Box>
+          <Box>
+            <Typography variant="h5" sx={{ fontWeight: 700, letterSpacing: '-0.02em' }}>{t('evolution.title')}</Typography>
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.25 }}>{t('evolution.subtitle')}</Typography>
+          </Box>
+        </Box>
+        {results.length > 0 && (
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, px: 1.5, py: 0.75, borderRadius: 2, color: 'success.main', bgcolor: 'rgba(34,197,94,0.1)', border: 1, borderColor: 'rgba(34,197,94,0.2)' }}>
+              <CheckCircle size={14} />
+              <Typography variant="caption" sx={{ fontWeight: 900 }}>{successCount}</Typography>
+            </Box>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, px: 1.5, py: 0.75, borderRadius: 2, color: 'error.main', bgcolor: 'rgba(239,68,68,0.1)', border: 1, borderColor: 'rgba(239,68,68,0.2)' }}>
+              <Cancel size={14} />
+              <Typography variant="caption" sx={{ fontWeight: 900 }}>{failCount}</Typography>
+            </Box>
+          </Box>
+        )}
+      </Box>
+
+      <Box sx={{ mb: 3, flexShrink: 0, display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+        {tabs.map((tab) => {
+          const active = activeTab === tab.id;
+          return (
+            <Button
               key={tab.id}
+              size="small"
               onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all ${
-                activeTab === tab.id
-                  ? 'bg-accent/10 text-accent border border-accent/20'
-                  : 'text-text-secondary hover:text-text-primary hover:bg-background-soft/50'
-              }`}
+              startIcon={tab.icon}
+              sx={{
+                px: 2,
+                py: 1,
+                borderRadius: 2.5,
+                fontWeight: 900,
+                fontSize: '0.875rem',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                transition: 'all 0.2s',
+                color: active ? 'primary.main' : 'text.secondary',
+                bgcolor: active ? (theme) => alpha(theme.palette.primary.main, 0.1) : 'transparent',
+                border: 1,
+                borderColor: active ? (theme) => alpha(theme.palette.primary.main, 0.2) : 'transparent',
+                '&:hover': active ? { bgcolor: (theme) => alpha(theme.palette.primary.main, 0.1) } : { color: 'text.primary', bgcolor: 'action.hover' },
+              }}
             >
-              {tab.icon}
               {tab.label}
               {tab.count !== undefined && tab.count > 0 && (
-                <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
-                  activeTab === tab.id ? 'bg-accent/20 text-accent' : 'bg-background-soft text-text-muted'
-                }`}>
+                <Box component="span" sx={{ ml: 0.5, px: 0.75, py: 0.25, borderRadius: '999px', fontSize: 10, fontWeight: 900, minWidth: 18, textAlign: 'center', color: active ? 'primary.main' : 'text.secondary', bgcolor: active ? (theme) => alpha(theme.palette.primary.main, 0.2) : 'action.hover' }}>
                   {tab.count}
-                </span>
+                </Box>
               )}
-            </button>
-          ))}
-        </div>
-      </div>
+            </Button>
+          );
+        })}
+      </Box>
 
-      {/* Content */}
-      <div className="flex-1 overflow-y-auto">
-        <div className="p-6 max-w-5xl mx-auto">
-          {/* Test Tab */}
-          <div style={{ display: activeTab === 'test' ? 'block' : 'none' }}>
-            <div className="space-y-6">
-              <div className="p-6 bg-background-card border border-border rounded-2xl shadow-sm">
-                <div className="flex items-center gap-2 mb-4">
-                  <Globe className="w-4 h-4 text-accent" />
-                  <h2 className="text-sm font-bold text-text-secondary uppercase tracking-tight">域名列表</h2>
-                </div>
-                <textarea
+      <Box sx={{ flexGrow: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', width: '100%', pb: 6 }}>
+      <Box sx={{ p: 3, width: '100%' }}>
+      <Box sx={{ display: activeTab === 'test' ? 'block' : 'none' }}>
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2.5 }}>
+              <Box sx={{ p: 3, bgcolor: 'background.paper', border: 1, borderColor: 'divider', borderRadius: 2, boxShadow: 1, transition: 'box-shadow 0.3s', '&:hover': { boxShadow: 3 } }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+                  <Box sx={{ p: 0.75, borderRadius: 1, color: 'primary.main', bgcolor: (theme) => alpha(theme.palette.primary.main, 0.1), display: 'flex' }}>
+                    <Globe size={14} />
+                  </Box>
+                  <Typography variant="body2" sx={{ fontWeight: 900, color: 'text.secondary', textTransform: 'uppercase', letterSpacing: '0.01em' }}>{t('evolution.domain_list')}</Typography>
+                  <Typography variant="caption" color="text.secondary" sx={{ ml: 'auto' }}>
+                    {t('evolution.domain_count', { count: domainCount })}
+                  </Typography>
+                </Box>
+                <TextField
+                  multiline
+                  rows={6}
+                  fullWidth
                   value={domains}
                   onChange={(e) => setDomains(e.target.value)}
-                  placeholder="example.com&#10;test.com&#10;demo.org"
-                  className="w-full h-40 px-4 py-3 bg-background-soft/50 border border-border rounded-xl text-text-primary placeholder-text-muted focus:outline-none focus:ring-2 focus:ring-accent/30 focus:border-accent/50 resize-none font-mono text-sm transition-all"
+                  placeholder={t('evolution.placeholder')}
                   disabled={isRunning}
+                  slotProps={{ input: { sx: { fontSize: '0.875rem', p: 2 } } }}
+                  sx={{ '& .MuiOutlinedInput-root': { bgcolor: 'action.hover', borderRadius: 1.5 } }}
                 />
 
-                <div className="flex items-center justify-between mt-4">
-                  <label className="flex items-center gap-2 cursor-pointer group">
-                    <div className={`w-10 h-5 rounded-full transition-all duration-200 ${enableIPv6 ? 'bg-accent border border-accent/20' : 'bg-slate-200 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700'}`}>
-                      <div className={`w-4 h-4 rounded-full bg-white shadow-sm border border-slate-300/40 dark:border-zinc-600/40 transition-transform mt-0.5 ${enableIPv6 ? 'translate-x-5' : 'translate-x-0.5'}`} />
-                    </div>
-                    <input
-                      type="checkbox"
+                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mt: 2 }}>
+                  <Box component="label" sx={{ display: 'flex', alignItems: 'center', gap: 1.25, cursor: ipv6Available ? 'pointer' : 'not-allowed', opacity: ipv6Available ? 1 : 0.5 }}>
+                    <Switch
                       checked={enableIPv6}
                       onChange={(e) => setEnableIPv6(e.target.checked)}
-                      className="sr-only"
                       disabled={isRunning}
+                      size="small"
                     />
-                    <span className="text-sm text-text-secondary group-hover:text-text-primary transition-colors">启用 IPv6</span>
-                  </label>
+                    <Typography variant="body2" color="text.secondary">
+                      {t('evolution.enable_ipv6')}
+                      {!ipv6Available && <Box component="span" sx={{ ml: 1, fontSize: 10, color: 'warning.main', fontWeight: 900 }}>({t('network.ipv6_warn_suffix')})</Box>}
+                    </Typography>
+                  </Box>
 
-                  {!isRunning ? (
-                    <button
-                      onClick={handleStartTest}
-                      disabled={isOperating}
-                      className="flex items-center gap-2 px-5 py-2.5 bg-accent hover:bg-accent/90 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl text-sm font-bold transition-all shadow-sm hover:shadow-md"
-                    >
-                      {isOperating ? (
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                      ) : (
-                        <Play className="w-4 h-4" />
-                      )}
-                      开始测试
-                    </button>
-                  ) : (
-                    <button
-                      onClick={handleStopTest}
-                      className="flex items-center gap-2 px-5 py-2.5 bg-danger hover:bg-danger/90 text-white rounded-xl text-sm font-bold transition-all shadow-sm hover:shadow-md"
-                    >
-                      <Square className="w-4 h-4" />
-                      停止测试
-                    </button>
-                  )}
-                </div>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    {isRunning ? (
+                      <Button variant="outlined" color="error" size="small" startIcon={<Stop size={16} />} onClick={handleStopTest} sx={{ fontWeight: 900, borderRadius: 1.5 }}>
+                        {t('evolution.stop_test')}
+                      </Button>
+                    ) : (
+                      <Button variant="contained" size="small" startIcon={isOperating ? <CircularProgress size={16} color="primary" /> : <Play size={16} />} onClick={handleStartTest} disabled={isOperating || domains.trim().length === 0} sx={{ fontWeight: 900, borderRadius: 1.5 }}>
+                        {t('evolution.start_test')}
+                      </Button>
+                    )}
+                  </Box>
+                </Box>
 
                 {isRunning && (
-                  <div className="mt-5 pt-4 border-t border-border/50">
-                    <div className="flex items-center justify-between text-xs text-text-muted mb-2">
-                      <span className="flex items-center gap-1.5 font-bold">
-                        <Loader2 className="w-3.5 h-3.5 animate-spin text-accent" />
-                        测试进度
-                      </span>
-                      <span className="font-mono font-bold text-accent bg-accent/10 px-2 py-0.5 rounded-md text-[11px]">{progress.current} / {progress.total}</span>
-                    </div>
-                    <div className="w-full h-3 bg-background-soft border border-border/40 rounded-full overflow-hidden shadow-inner relative">
-                      <div
-                        className="h-full rounded-full transition-all duration-500 ease-out animate-shimmer"
-                        style={{
-                          width: `${progress.total > 0 ? (progress.current / progress.total) * 100 : 0}%`,
-                          background: 'linear-gradient(90deg, var(--accent) 0%, #a855f7 50%, var(--accent) 100%)',
-                          boxShadow: '0 0 10px color-mix(in srgb, var(--accent) 45%, transparent)'
-                        }}
-                      />
-                    </div>
+                  <Box sx={{ mt: 2.5, pt: 2, borderTop: 1, borderColor: 'divider' }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.25 }}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, color: 'text.secondary' }}>
+                        <Box sx={{ display: 'flex', color: 'primary.main' }}>
+                          <CircularProgress size={14} color="primary" />
+                        </Box>
+                        <Typography variant="caption" sx={{ fontWeight: 900 }}>{t('evolution.test_progress')}</Typography>
+                      </Box>
+                      <Typography variant="caption" sx={{ fontWeight: 900, color: 'primary.main', bgcolor: (theme) => alpha(theme.palette.primary.main, 0.1), px: 1, py: 0.25, borderRadius: 0.75, fontSize: 11 }}>
+                        {progress.current} / {progress.total}
+                      </Typography>
+                    </Box>
+                    <LinearProgress
+                      variant="determinate"
+                      value={progressPercent}
+                      sx={{
+                        height: 10,
+                        borderRadius: '999px',
+                        bgcolor: 'action.hover',
+                        border: 1,
+                        borderColor: 'divider',
+                        '& .MuiLinearProgress-bar': {
+                          borderRadius: '999px',
+                          background: (theme) => `linear-gradient(90deg, ${theme.palette.primary.main}, ${theme.palette.primary.light}, ${theme.palette.primary.main})`,
+                          backgroundSize: '200% 100%',
+                          animation: `${shimmer} 2s linear infinite`,
+                        },
+                      }}
+                    />
                     {progress.current > 0 && (
-                      <div className="mt-2 text-xs text-text-secondary text-center font-bold animate-pulse">
-                        正在测试第 {progress.current} 个域名...
-                      </div>
+                      <Typography variant="caption" color="text.secondary" sx={{ mt: 1.25, display: 'block', textAlign: 'center', fontWeight: 900 }}>
+                        {t('evolution.testing_domain', { current: progress.current })}
+                      </Typography>
                     )}
-                  </div>
+                  </Box>
                 )}
-              </div>
+              </Box>
 
-              <div className="p-6 bg-background-card border border-border rounded-2xl shadow-sm">
-                <h3 className="text-sm font-bold text-text-secondary uppercase tracking-tight mb-3">测试说明</h3>
-                <div className="space-y-2 text-xs text-text-muted">
-                  <p>• 测试将依次尝试：直连 → TCPing → 域前置 → TLS分片 → ECH → QUIC</p>
-                  <p>• 成功后会自动生成临时规则，可在「规则」页面查看并转为正式规则</p>
-                  <p>• 测试结果可在「结果」页面查看详细信息</p>
-                </div>
-              </div>
-            </div>
-          </div>
+              <Box sx={{ p: 2.5, bgcolor: 'background.paper', border: 1, borderColor: 'divider', borderRadius: 2, boxShadow: 1 }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1.5 }}>
+                  <Box sx={{ p: 0.75, borderRadius: 1, color: 'primary.main', bgcolor: (theme) => alpha(theme.palette.primary.main, 0.1), display: 'flex' }}>
+                    <Wifi size={14} />
+                  </Box>
+                  <Typography variant="body2" sx={{ fontWeight: 900, color: 'text.secondary', textTransform: 'uppercase', letterSpacing: '0.01em' }}>{t('evolution.test_flow')}</Typography>
+                </Box>
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, alignItems: 'center' }}>
+                  {flowSteps.map((step, i) => (
+                    <React.Fragment key={step}>
+                      <Typography variant="caption" sx={{ px: 1.25, py: 0.5, bgcolor: 'action.hover', border: 1, borderColor: 'divider', borderRadius: 1, color: 'text.secondary', fontWeight: 500 }}>
+                        {step}
+                      </Typography>
+                      {i < 5 && (
+                        <Box component="span" sx={{ display: 'inline-flex', alignSelf: 'center', color: 'text.secondary', opacity: 0.4 }}>
+                          <ArrowForward size={12} />
+                        </Box>
+                      )}
+                    </React.Fragment>
+                  ))}
+                </Box>
+                <Typography variant="caption" color="text.secondary" sx={{ mt: 1.5, display: 'block' }}>
+                  {t('evolution.test_flow_desc')}
+                </Typography>
+              </Box>
+            </Box>
+          </Box>
 
-          {/* Rules Tab */}
-          <div style={{ display: activeTab === 'rules' ? 'block' : 'none' }}>
-            <div className="space-y-4">
+          <Box sx={{ display: activeTab === 'rules' ? 'block' : 'none' }}>
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
               {tempRules.length === 0 ? (
-                <div className="p-6 bg-background-card border border-border rounded-2xl shadow-sm">
-                  <div className="text-center py-16">
-                    <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-background-soft/50 border border-border/50 flex items-center justify-center">
-                      <FileText className="w-7 h-7 text-text-muted opacity-30" />
-                    </div>
-                    <p className="text-sm text-text-muted">暂无生成的规则</p>
-                    <p className="text-xs text-text-muted/60 mt-1">完成测试后，成功的域名将生成临时规则</p>
-                  </div>
-                </div>
+                <Box sx={{ p: 3, bgcolor: 'background.paper', border: 1, borderColor: 'divider', borderRadius: 2, boxShadow: 1 }}>
+                  <Box sx={{ textAlign: 'center', py: 7 }}>
+                    <Box sx={{ width: 64, height: 64, mx: 'auto', mb: 2, borderRadius: 2, bgcolor: 'action.hover', border: 1, borderColor: 'divider', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'text.disabled', opacity: 0.5 }}>
+                      <FileText size={28} />
+                    </Box>
+                    <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 500 }}>{t('evolution.empty_rules')}</Typography>
+                    <Typography variant="caption" sx={{ mt: 0.75, color: 'text.disabled' }}>{t('evolution.empty_rules_desc')}</Typography>
+                  </Box>
+                </Box>
               ) : (
                 <>
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <FileText className="w-4 h-4 text-accent" />
-                      <span className="text-sm font-bold text-text-primary">临时规则</span>
-                      <span className="text-xs text-text-muted font-mono">{tempRules.length} 条</span>
-                    </div>
-                    <div className="text-xs text-text-muted">
-                      已应用: {tempRules.filter(r => r.is_applied).length} / {tempRules.length}
-                    </div>
-                  </div>
-                  <div className="space-y-2">
-                    {tempRules.map((rule) => (
-                      <div
-                        key={rule.id}
-                        className="p-4 bg-background-card border border-border rounded-xl hover:border-accent/30 transition-all shadow-sm"
-                      >
-                        <div className="flex items-center gap-4">
-                          <div className={`p-2 rounded-lg ${getMethodBgColor(rule.method)}`}>
-                            <span className={getMethodColor(rule.method)}>{getMethodIcon(rule.method)}</span>
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2">
-                              <span className="text-sm font-bold text-text-primary truncate">{rule.name}</span>
-                              <span className={`text-[10px] px-2 py-0.5 rounded-full border font-bold ${getMethodBgColor(rule.method)} ${getMethodColor(rule.method)}`}>
-                                {getMethodLabel(rule.method)}
-                              </span>
-                              {rule.is_applied && (
-                                <span className="text-[10px] px-2 py-0.5 rounded-full bg-success/10 border border-success/20 text-success font-bold flex items-center gap-1">
-                                  <CheckSquare className="w-3 h-3" />
-                                  已应用
-                                </span>
-                              )}
-                            </div>
-                            <div className="text-xs text-text-muted mt-0.5 font-mono">
-                              {rule.domain}
-                              {rule.sni_fake && <span className="ml-2">• SNI: {rule.sni_fake}</span>}
-                            </div>
-                          </div>
-                          {!rule.is_applied && (
-                            <button
-                              onClick={() => handleApplyRule(rule)}
-                              className="flex items-center gap-1.5 px-4 py-2 bg-accent/10 hover:bg-accent/20 text-accent text-xs rounded-lg font-bold transition-all border border-accent/20"
-                            >
-                              <ArrowRight className="w-3 h-3" />
-                              转为正式规则
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
+                  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <Box sx={{ color: 'primary.main', display: 'flex' }}>
+                        <FileText size={16} />
+                      </Box>
+                      <Typography variant="body2" sx={{ fontWeight: 900 }}>{t('evolution.temp_rules')}</Typography>
+                      <Typography variant="caption" color="text.secondary" sx={{ bgcolor: 'action.hover', px: 1, py: 0.25, borderRadius: 0.75 }}>{tempRules.length}</Typography>
+                    </Box>
+                    <Typography variant="caption" color="text.secondary">
+                      {t('evolution.applied_count', { applied: tempRules.filter(r => r.is_applied).length, total: tempRules.length })}
+                    </Typography>
+                  </Box>
+                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                    {tempRules.map((rule) => {
+                      const mc = getMethodColors(rule.method);
+                      return (
+                        <Box key={rule.id} sx={{ p: 2, bgcolor: 'background.paper', border: 1, borderColor: 'divider', borderRadius: 1.5, transition: 'all 0.2s', '&:hover': { borderColor: (theme) => alpha(theme.palette.primary.main, 0.3), boxShadow: 2 } }}>
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                            <Box sx={{ p: 1, borderRadius: 1, color: mc.color, bgcolor: mc.bg, border: 1, borderColor: mc.border, display: 'flex', transition: 'transform 0.2s', '&:hover': { transform: 'scale(1.1)' } }}>
+                              {getMethodIcon(rule.method)}
+                            </Box>
+                            <Box sx={{ flex: 1, minWidth: 0 }}>
+                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                <Typography variant="body2" sx={{ fontWeight: 900, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>{rule.name}</Typography>
+                                <Typography variant="caption" sx={{ fontSize: 10, px: 1, py: 0.25, borderRadius: '999px', border: 1, fontWeight: 900, color: mc.color, bgcolor: mc.bg, borderColor: mc.border }}>
+                                  {getMethodLabel(rule.method)}
+                                </Typography>
+                                {rule.is_applied && (
+                                  <Typography variant="caption" sx={{ fontSize: 10, px: 1, py: 0.25, borderRadius: '999px', border: 1, fontWeight: 900, color: 'success.main', bgcolor: 'rgba(34,197,94,0.1)', borderColor: 'rgba(34,197,94,0.2)', display: 'inline-flex', alignItems: 'center', gap: 0.5 }}>
+                                    <CheckSquare size={12} />
+                                    {t('evolution.applied')}
+                                  </Typography>
+                                )}
+                              </Box>
+                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mt: 0.5 }}>
+                                <Typography variant="caption" color="text.secondary" sx={{ }}>{rule.domain}</Typography>
+                                {rule.sni_fake && (
+                                  <>
+                                    <Typography variant="caption" sx={{ color: 'divider' }}>|</Typography>
+                                    <Typography variant="caption" color="text.secondary" sx={{ }}>{t('evolution.sni')}: {rule.sni_fake}</Typography>
+                                  </>
+                                )}
+                              </Box>
+                            </Box>
+                            {!rule.is_applied && (
+                              <Button size="small" startIcon={<ArrowForward size={12} />} onClick={() => handleApplyRule(rule)} sx={{ fontSize: 12, fontWeight: 900, borderRadius: 1, color: 'primary.main', bgcolor: (theme) => alpha(theme.palette.primary.main, 0.1), border: 1, borderColor: (theme) => alpha(theme.palette.primary.main, 0.2), '&:hover': { bgcolor: (theme) => alpha(theme.palette.primary.main, 0.2) } }}>
+                                {t('evolution.convert_to_rule')}
+                              </Button>
+                            )}
+                          </Box>
+                        </Box>
+                      );
+                    })}
+                  </Box>
                 </>
               )}
-            </div>
-          </div>
+            </Box>
+          </Box>
 
-          {/* Results Tab */}
-          <div style={{ display: activeTab === 'results' ? 'block' : 'none' }}>
-            <div className="space-y-4">
+          <Box sx={{ display: activeTab === 'results' ? 'block' : 'none' }}>
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
               {results.length === 0 ? (
-                <div className="p-6 bg-background-card border border-border rounded-2xl shadow-sm">
-                  <div className="text-center py-16">
-                    <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-background-soft/50 border border-border/50 flex items-center justify-center">
-                      <Activity className="w-7 h-7 text-text-muted opacity-30" />
-                    </div>
-                    <p className="text-sm text-text-muted">暂无测试结果</p>
-                    <p className="text-xs text-text-muted/60 mt-1">在「测试」页面输入域名并开始测试</p>
-                  </div>
-                </div>
+                <Box sx={{ p: 3, bgcolor: 'background.paper', border: 1, borderColor: 'divider', borderRadius: 2, boxShadow: 1 }}>
+                  <Box sx={{ textAlign: 'center', py: 7 }}>
+                    <Box sx={{ width: 64, height: 64, mx: 'auto', mb: 2, borderRadius: 2, bgcolor: 'action.hover', border: 1, borderColor: 'divider', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'text.disabled', opacity: 0.5 }}>
+                      <Activity size={28} />
+                    </Box>
+                    <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 500 }}>{t('evolution.empty_results')}</Typography>
+                    <Typography variant="caption" sx={{ mt: 0.75, color: 'text.disabled' }}>{t('evolution.empty_results_desc')}</Typography>
+                  </Box>
+                </Box>
               ) : (
                 <>
-                  <div className="flex items-center gap-2">
-                    <Activity className="w-4 h-4 text-accent" />
-                    <span className="text-sm font-bold text-text-primary">测试结果</span>
-                    <span className="text-xs text-text-muted font-mono">{results.length} 条</span>
-                    <span className="ml-auto text-xs text-text-muted">
-                      成功: {results.filter(r => r.reachable).length} | 失败: {results.filter(r => !r.reachable).length}
-                    </span>
-                  </div>
-                  <div className="space-y-2">
-                    {results.map((result, index) => (
-                      <div
-                        key={index}
-                        className={`p-4 border rounded-xl transition-all ${
-                          result.reachable
-                            ? 'bg-background-card border-border hover:border-accent/30 shadow-sm'
-                            : 'bg-danger/5 border-danger/20'
-                        }`}
-                      >
-                        <div className="flex items-center gap-3">
-                          <div className={`p-2 rounded-lg ${result.reachable ? getMethodBgColor(result.method) : 'bg-danger/10 border-danger/20'}`}>
-                            <span className={result.reachable ? getMethodColor(result.method) : 'text-danger'}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <Box sx={{ color: 'primary.main', display: 'flex' }}>
+                        <Activity size={16} />
+                      </Box>
+                      <Typography variant="body2" sx={{ fontWeight: 900 }}>{t('evolution.test_results')}</Typography>
+                      <Typography variant="caption" color="text.secondary" sx={{ bgcolor: 'action.hover', px: 1, py: 0.25, borderRadius: 0.75 }}>{results.length}</Typography>
+                    </Box>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, color: 'success.main' }}>
+                        <CheckCircle size={14} />
+                        <Typography variant="caption" sx={{ fontWeight: 900 }}>{t('evolution.success_count', { count: successCount })}</Typography>
+                      </Box>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, color: 'error.main' }}>
+                        <Cancel size={14} />
+                        <Typography variant="caption" sx={{ fontWeight: 900 }}>{t('evolution.fail_count', { count: failCount })}</Typography>
+                      </Box>
+                    </Box>
+                  </Box>
+                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                    {results.map((result, index) => {
+                      const mc = getMethodColors(result.method);
+                      return (
+                        <Box
+                          key={index}
+                          sx={{
+                            p: 2,
+                            border: 1,
+                            borderRadius: 1.5,
+                            transition: 'all 0.2s',
+                            ...(result.reachable
+                              ? { bgcolor: 'background.paper', borderColor: 'divider', '&:hover': { borderColor: (theme) => alpha(theme.palette.primary.main, 0.3), boxShadow: 2 } }
+                              : { bgcolor: 'rgba(239,68,68,0.05)', borderColor: 'rgba(239,68,68,0.2)', '&:hover': { borderColor: 'rgba(239,68,68,0.4)' } }),
+                          }}
+                        >
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                            <Box sx={{ p: 1, borderRadius: 1, display: 'flex', transition: 'transform 0.2s', '&:hover': { transform: 'scale(1.1)' }, color: result.reachable ? mc.color : 'error.main', bgcolor: result.reachable ? mc.bg : 'rgba(239,68,68,0.1)', border: 1, borderColor: result.reachable ? mc.border : 'rgba(239,68,68,0.2)' }}>
                               {getMethodIcon(result.method)}
-                            </span>
-                          </div>
+                            </Box>
 
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <span className="text-sm font-bold text-text-primary">{result.domain}</span>
-                              {result.reachable ? (
-                                <>
-                                  <span className={`text-[10px] px-2 py-0.5 rounded-full border font-bold ${getMethodBgColor(result.method)} ${getMethodColor(result.method)}`}>
-                                    {getMethodLabel(result.method)}
-                                  </span>
-                                  {result.is_cloudflare && (
-                                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-orange-500/10 border border-orange-500/20 text-orange-500 font-bold">
-                                      Cloudflare
-                                    </span>
-                                  )}
-                                </>
-                              ) : (
-                                <span className="text-[10px] px-2 py-0.5 rounded-full bg-danger/10 border border-danger/20 text-danger font-bold">
-                                  不可达
-                                </span>
-                              )}
-                            </div>
-                            <div className="flex items-center gap-4 mt-1 text-xs text-text-muted">
-                              {result.reachable && (
-                                <>
-                                  <span>延迟: {Math.round(result.delay / 1000000)}ms</span>
-                                  {result.best_ip && <span>IP: {result.best_ip}</span>}
-                                </>
-                              )}
-                              {!result.reachable && result.error && (
-                                <span className="text-danger">{result.error}</span>
-                              )}
-                            </div>
-                          </div>
+                            <Box sx={{ flex: 1, minWidth: 0 }}>
+                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', minWidth: 0 }}>
+                                <Typography variant="body2" sx={{ fontWeight: 900, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>{result.domain}</Typography>
+                                {result.reachable ? (
+                                  <>
+                                    <Typography variant="caption" sx={{ fontSize: 10, px: 1, py: 0.25, borderRadius: '999px', border: 1, fontWeight: 900, color: mc.color, bgcolor: mc.bg, borderColor: mc.border }}>
+                                      {getMethodLabel(result.method)}
+                                    </Typography>
+                                    {result.is_cloudflare && (
+                                      <Typography variant="caption" sx={{ fontSize: 10, px: 1, py: 0.25, borderRadius: '999px', border: 1, fontWeight: 900, color: 'warning.main', bgcolor: 'rgba(234,88,12,0.1)', borderColor: 'rgba(234,88,12,0.2)' }}>
+                                        {t('evolution.cloudflare')}
+                                      </Typography>
+                                    )}
+                                  </>
+                                ) : (
+                                  <Typography variant="caption" sx={{ fontSize: 10, px: 1, py: 0.25, borderRadius: '999px', border: 1, fontWeight: 900, color: 'error.main', bgcolor: 'rgba(239,68,68,0.1)', borderColor: 'rgba(239,68,68,0.2)' }}>
+                                    {t('evolution.unreachable')}
+                                  </Typography>
+                                )}
+                              </Box>
+                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mt: 0.5 }}>
+                                {result.reachable ? (
+                                  <>
+                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, color: 'text.secondary' }}>
+                                      <History size={12} />
+                                      <Typography variant="caption" color="text.secondary" sx={{ py: 0.25, outline: '1px solid transparent' }}>{t('evolution.delay', { ms: Math.round(result.delay / 1000000) })}</Typography>
+                                    </Box>
+                                    {result.best_ip && <Typography variant="caption" color="text.secondary" sx={{ py: 0.25, outline: '1px solid transparent' }}>{result.best_ip}</Typography>}
+                                  </>
+                                ) : (
+                                  result.error && <Typography variant="caption" sx={{ color: 'error.main' }}>{result.error}</Typography>
+                                )}
+                              </Box>
+                            </Box>
 
-                          <div className="text-[10px] text-text-muted font-mono shrink-0">
-                            {new Date(result.timestamp).toLocaleTimeString()}
-                          </div>
-                        </div>
+                            <Typography variant="caption" color="text.secondary" sx={{ flexShrink: 0, opacity: 0.6, transition: 'opacity 0.2s', '&:hover': { opacity: 1 } }}>
+                              {new Date(result.timestamp).toLocaleTimeString()}
+                            </Typography>
+                          </Box>
 
-                        {result.step_results && result.step_results.length > 0 && (
-                          <div className="mt-3 pt-3 border-t border-border/50">
-                            <div className="flex flex-wrap gap-1.5">
-                              {result.step_results.map((step, i) => (
-                                <div
-                                  key={i}
-                                  className={`flex items-center gap-1 text-[10px] px-2 py-1 rounded-full border font-bold ${
-                                    step.success
-                                      ? 'bg-success/10 border-success/20 text-success'
-                                      : 'bg-danger/10 border-danger/20 text-danger'
-                                  }`}
-                                >
-                                  {step.success ? <CheckCircle2 className="w-3 h-3" /> : <XCircle className="w-3 h-3" />}
-                                  {step.step_name.replace('_', ' ')}
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
+                          {result.step_results && result.step_results.length > 0 && (
+                            <Box sx={{ mt: 1.5, pt: 1.5, borderTop: 1, borderColor: 'divider' }}>
+                              <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75 }}>
+                                {result.step_results.map((step, i) => (
+                                  <Box key={i} sx={{ display: 'flex', alignItems: 'center', gap: 0.5, fontSize: 10, px: 1, py: 0.5, borderRadius: '999px', border: 1, fontWeight: 900, color: step.success ? 'success.main' : 'error.main', bgcolor: step.success ? 'rgba(34,197,94,0.1)' : 'rgba(239,68,68,0.1)', borderColor: step.success ? 'rgba(34,197,94,0.2)' : 'rgba(239,68,68,0.2)' }}>
+                                    {step.success ? <CheckCircle size={12} /> : <Cancel size={12} />}
+                                    {getStepLabel(step.step_name)}
+                                  </Box>
+                                ))}
+                              </Box>
+                            </Box>
+                          )}
+                        </Box>
+                      );
+                    })}
+                  </Box>
                 </>
               )}
-            </div>
-          </div>
-        </div>
-      </div>
+            </Box>
+        </Box>
+        </Box>
+      </Box>
 
-      {/* Rule Confirmation Modal */}
       <Modal
         isOpen={showRuleModal}
         onClose={() => { setShowRuleModal(false); setSelectedRule(null); }}
-        title="确认转为正式规则"
+        title={t('evolution.confirm_title')}
       >
         {selectedRule && (
-          <div className="space-y-4">
-            <p className="text-sm text-text-secondary">
-              确定要将以下规则转为正式规则并写入配置吗？
-            </p>
-            <div className="p-4 bg-background-soft/50 border border-border rounded-xl">
-              <div className="flex items-center gap-2 mb-2">
-                <span className="text-sm font-bold text-text-primary">{selectedRule.name}</span>
-                <span className={`text-[10px] px-2 py-0.5 rounded-full border font-bold ${getMethodBgColor(selectedRule.method)} ${getMethodColor(selectedRule.method)}`}>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <Typography variant="body2" color="text.secondary">
+              {t('evolution.confirm_desc')}
+            </Typography>
+            <Box sx={{ p: 2, bgcolor: 'action.hover', border: 1, borderColor: 'divider', borderRadius: 1.5 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                <Typography variant="body2" sx={{ fontWeight: 900 }}>{selectedRule.name}</Typography>
+                <Typography variant="caption" sx={{ fontSize: 10, px: 1, py: 0.25, borderRadius: '999px', border: 1, fontWeight: 900, color: getMethodColors(selectedRule.method).color, bgcolor: getMethodColors(selectedRule.method).bg, borderColor: getMethodColors(selectedRule.method).border }}>
                   {getMethodLabel(selectedRule.method)}
-                </span>
-              </div>
-              <div className="text-xs text-text-muted font-mono">
-                域名: {selectedRule.domain}
-                {selectedRule.sni_fake && <span> • SNI: {selectedRule.sni_fake}</span>}
-              </div>
-            </div>
-            <div className="flex gap-3 justify-end">
-              <button
-                onClick={() => { setShowRuleModal(false); setSelectedRule(null); }}
-                className="px-4 py-2 bg-background-soft border border-border text-text-secondary rounded-xl text-sm font-bold hover:bg-background-hover transition-all"
-              >
-                取消
-              </button>
-              <button
-                onClick={confirmApplyRule}
-                className="px-4 py-2 bg-accent hover:bg-accent/90 text-white rounded-xl text-sm font-bold transition-all shadow-sm"
-              >
-                确认转换
-              </button>
-            </div>
-          </div>
+                </Typography>
+              </Box>
+              <Typography variant="caption" color="text.secondary" sx={{ }}>
+                {t('evolution.domain')}: {selectedRule.domain}
+                {selectedRule.sni_fake && <Box component="span"> | {t('evolution.sni')}: {selectedRule.sni_fake}</Box>}
+              </Typography>
+            </Box>
+            <Box sx={{ display: 'flex', gap: 1.5, justifyContent: 'flex-end' }}>
+              <Button variant="outlined" size="small" onClick={() => { setShowRuleModal(false); setSelectedRule(null); }} sx={{ fontWeight: 900, borderRadius: 1.5 }}>
+                {t('common.cancel')}
+              </Button>
+              <Button variant="contained" size="small" onClick={confirmApplyRule} sx={{ fontWeight: 900, borderRadius: 1.5 }}>
+                {t('evolution.confirm_convert')}
+              </Button>
+            </Box>
+          </Box>
         )}
       </Modal>
-    </div>
+    </Box>
   );
 };
 
